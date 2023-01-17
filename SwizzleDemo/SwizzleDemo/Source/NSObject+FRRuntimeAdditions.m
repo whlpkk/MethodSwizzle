@@ -7,7 +7,7 @@
 
 #import "NSObject+FRRuntimeAdditions.h"
 
-void class_swizzleInstanceMethod(Class class, SEL originalSEL, SEL replacementSEL)
+void class_swizzleMethod(Class class, SEL originalSEL, SEL replacementSEL)
 {
     //class_getInstanceMethod()，如果子类没有实现相应的方法，则会返回父类的方法。
     Method originMethod = class_getInstanceMethod(class, originalSEL);
@@ -38,23 +38,66 @@ void class_swizzleInstanceMethod(Class class, SEL originalSEL, SEL replacementSE
     }
 }
 
-void class_swizzleClassMethod(Class class, SEL originalSEL, SEL replacementSEL)
-{
-    //类方法实际上是储存在类对象的类(即元类)中，即类方法相当于元类的实例方法,所以只需要把元类传入，其他逻辑和交互实例方法一样。
-    Class class2 = object_getClass(class);
-    class_swizzleInstanceMethod(class2, originalSEL, replacementSEL);
+//有时为了避免方法命名冲突和参数 _cmd 被篡改，也会使用下面这种『静态方法版本』的 Method Swizzle。CaptainHook 中的宏定义也是采用这种方式，比较推荐：
+BOOL class_swizzleMethodAndStore(Class class, SEL original, IMP replacement, IMP *store) {
+    IMP imp = NULL;
+    Method method = class_getInstanceMethod(class, original);
+    if (method) {
+        const char *type = method_getTypeEncoding(method);
+        imp = class_replaceMethod(class, original, replacement, type);
+        if (!imp) {
+            imp = method_getImplementation(method);
+        }
+    }
+    if (imp && store) { *store = imp; }
+    return (imp != NULL);
 }
+
+
 
 @implementation NSObject (FRRuntimeAdditions)
 
+// 第一种方式hook，优点用法简单。缺点：可能方法命名冲突、修改了_cmd参数。
 + (void)swizzleInstanceMethod:(SEL)originalSEL with:(SEL)replacementSEL
 {
-    class_swizzleInstanceMethod(self, originalSEL, replacementSEL);
+    class_swizzleMethod(self, originalSEL, replacementSEL);
 }
 
 + (void)swizzleClassMethod:(SEL)originalSEL with:(SEL)replacementSEL
 {
-    class_swizzleClassMethod(self, originalSEL, replacementSEL);
+    //类方法实际上是储存在类对象的类(即元类)中，即类方法相当于元类的实例方法,所以只需要把元类传入，其他逻辑和交互实例方法一样。
+    Class metaClass = object_getClass(self);
+    class_swizzleMethod(metaClass, originalSEL, replacementSEL);
+}
+// 用法如下：
+//+ (void)load {
+//    [self swizzleInstanceMethod:@selector(pointInside:withEvent:)
+//                           with:@selector(yzk_pointInside:withEvent:)];
+//}
+
+
+// 第二种方式hook，优点就是避免了第一种的缺点。缺点：用法稍显复杂。
++ (BOOL)swizzleInstanceMethod:(SEL)original with:(IMP)replacement store:(IMP *)store {
+    return class_swizzleMethodAndStore(self, original, replacement, store);
 }
 
++ (BOOL)swizzleClassMethod:(SEL)original with:(IMP)replacement store:(IMP *)store {
+    Class metaClass = object_getClass(self);
+    return class_swizzleMethodAndStore(metaClass, original, replacement, store);
+}
+// 用法如下：
+//static void MethodSwizzle(id self, SEL _cmd, id arg1);
+//static void (*MethodOriginal)(id self, SEL _cmd, id arg1);
+//
+//static void MethodSwizzle(id self, SEL _cmd, id arg1) {
+//    // do custom work
+//    MethodOriginal(self, _cmd, arg1);
+//}
+//+ (void)load {
+//    [self swizzle:@selector(originalMethod:) with:(IMP)MethodSwizzle store:(IMP *)&MethodOriginal];
+//}
+
 @end
+
+
+
